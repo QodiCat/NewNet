@@ -72,6 +72,9 @@ def get_params():
     parser.add_argument("--lr", type=float, default=1e-5, help="Initial learning rate") 
     parser.add_argument("--classifier_lr", type=float, default=1e-3, help="Initial learning rate") 
     parser.add_argument("--training_epochs", type=int, default=10, help="The number training epochs. NOTE: SEQ_warmup_epoch_before_fix_encoder and IPEFT_causallm_epoch are not included in training epochs.")
+    #新
+    parser.add_argument("--mlp_lr", type=float, default=1e-3, help="Initial learning rate")
+    parser.add_argument("--preference_loss_weight", type=float, default=0.1, help="Preference loss weight")
 
     parser.add_argument("--weight_decay", type=float, default=5e-4, help="Weight decay")
 

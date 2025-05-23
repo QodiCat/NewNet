@@ -8,6 +8,7 @@ backbone_extract_token: cls_token
 
 method: PEFT
 PEFT_type: LoRA
+Sub_PEFT_type: NewLoRA
 
 lr: 1e-5
 batch_size: 4

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-def get_optimizer(params, model, classifier_list):
+def get_optimizer(params, model, classifier_list,mlp):
 
     # build optimizer
     tg_params = []
@@ -18,7 +18,8 @@ def get_optimizer(params, model, classifier_list):
     if isinstance(classifier_list,nn.ModuleList):
         for i in range(len(classifier_list)):
             tg_params.append({'params': classifier_list[i].parameters(), 'lr': float(params.classifier_lr)})
-
+    if isinstance(mlp,nn.Module):
+        tg_params.append({'params': mlp.parameters(), 'lr': float(params.mlp_lr)})
     optimizer = torch.optim.AdamW(tg_params)
 
     return optimizer

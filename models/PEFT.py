@@ -12,6 +12,7 @@ from utils.dataloader import get_dataloader
 from utils.wrapmodel import WrapModel
 from utils.evaluation import evaluate_sent_level_acc_with_generation, evaluate_sent_level_acc_with_classifier_adapter, evaluate_word_level_acc_with_classifier_adapter
 from models.Base import BaseLearner
+import torch.nn.functional as F
 
 logger = logging.getLogger()
 
@@ -20,7 +21,7 @@ def get_PEFT_params(parser):
         The parameters of model PEFT
     '''
     parser.add_argument("--PEFT_type", type=str, default='PromptTuning', choices=['PromptTuning','LoRA'], help="The peft type")
-    
+    parser.add_argument("--Sub_PEFT_type", type=str, default='NewLoRA', choices=['NewLoRA'], help="The peft type")
     # For PromptTuning (more details can be found in this (url)[https://huggingface.co/docs/peft]
     parser.add_argument("--PEFT_num_virtual_tokens", type=int, default=10, help="The number of tokens for prompt tuning")
     parser.add_argument("--PEFT_prompt_tuning_init_text", type=str, default='auto', help="The initialization words for prompt tuning")
@@ -44,7 +45,8 @@ class PEFT(BaseLearner):
         assert params.il_mode in ['CIL','TIL'], 'NotImplemented for il mode %s and model %s'%(params.il_mode,'PEFT')
         assert params.classification_type in ['sentence-level','word-level'], 'NotImplemented for classification type %s'%(params.classification_type)
         assert not params.is_replay, 'NotImplemented for data replay!'
-
+        assert params.PEFT_type in ['LoRA','NewLoRA'], 'NotImplemented for PEFT type %s'%(params.PEFT_type)
+        
     # ================================= Initialization =======================================
     def build_metric(self):
         self.result_summary = ResultSummary(num_task=self.CL_dataset.continual_config['NUM_TASK'])
@@ -55,6 +57,27 @@ class PEFT(BaseLearner):
         for t_id in range(num_task):
             peft_config = self.model.peft_config['default']
             self.model.add_adapter(adapter_name='task-%d'%(t_id),peft_config=peft_config)
+        #目的是得到每个Lora的权重
+        self.mlp=nn.Sequential(
+            nn.Linear(self.model.config.hidden_size,self.model.config.hidden_size//2 ),
+            nn.ReLU(),
+            nn.Linear(self.model.config.hidden_size//2, num_task),
+            nn.Sigmoid()
+        )
+        # 初始化 MLP 的权重
+        self.mlp.apply(self.init_weights)
+        # 移动MLP到cuda
+        self.mlp.to(self.accelerator.device)    
+
+    def init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        
+    
+
+    
 
     def build_classifier(self):
         feature_dim = self.model.module.config.hidden_size if hasattr(self.model,'module') else self.model.config.hidden_size
@@ -64,7 +87,7 @@ class PEFT(BaseLearner):
             self.ce_loss = nn.CrossEntropyLoss()
 
     def build_optimizer(self):
-        self.optimizer = get_optimizer(self.params, self.model, self.classifier_list)
+        self.optimizer = get_optimizer(self.params, self.model, self.classifier_list,self.mlp)
         
     def build_dataloader(self):
         self.train_loader_list, self.dev_loader_list, self.test_loader_list = get_dataloader(self.params, self.CL_dataset, self.tokenizer)
@@ -153,11 +176,13 @@ class PEFT(BaseLearner):
                                     'attention_mask':lm_input['attention_mask_with_ans'],
                                     'labels':lm_input['labels_with_ans']}).loss
             
-        elif self.params.classifier in ['Linear','CosineLinear']:
+        elif self.params.classifier in ['Linear','CosineLinear'] and self.params.Sub_PEFT_type != 'NewLoRA':
             extracted_feature = obtain_features(params=self.params, 
                                                     model=model, 
                                                     lm_input=lm_input, 
                                                     tokenizer=self.tokenizer)
+            
+            
             logits = self.classifier_list[task_id](extracted_feature)
             
             if self.params.classification_type == 'sentence-level':
@@ -197,12 +222,26 @@ class PEFT(BaseLearner):
                     label_idx[label_idx>0] = label_idx[label_idx>0] - self.CL_dataset.continual_config['PRE_ACCUM_NUM_CLASS'][task_id] + 1
             else:
                 raise NotImplementedError()
-
             total_loss = self.ce_loss(logits,label_idx)
+        elif self.params.Sub_PEFT_type == 'NewLoRA':
+            extracted_feature = obtain_features(params=self.params, 
+                                                    model=model, 
+                                                    lm_input=lm_input, 
+                                                    tokenizer=self.tokenizer)
+            lora_weights=self.mlp(extracted_feature)
+            lora_weights=lora_weights.reshape(lora_weights.shape[0],-1)
+            #计算偏好损失
+            target_mask = torch.zeros_like(lora_weights)
+            target_mask[:, task_id] = 1
+            preference_loss = F.mse_loss(lora_weights, target_mask)
+            logits = self.classifier_list[task_id](extracted_feature)
+            logits = logits.reshape(-1,logits.shape[-1])
+            label_idx = lm_input['label_idx_cil'].reshape(-1)
+            total_loss = self.ce_loss(logits,label_idx) + preference_loss
+
         else:
             raise NotImplementedError()
 
-        # Backward
         self.model.train()
         self.optimizer.zero_grad()        
         self.accelerator.backward(total_loss)
@@ -216,11 +255,11 @@ class PEFT(BaseLearner):
         if self.params.info_per_steps and self.step%self.params.info_per_steps==0:
             mean_loss = np.mean(self.loss_list)
             if self.accelerator.is_main_process:
-                logger.info("Epoch %d, Step %d: Total_loss=%.3f,"%(
-                        epoch_id+1, self.step, mean_loss
+                logger.info("Epoch %d, Step %d: Total_loss=%.3f,Preference_loss=%.3f"%(
+                        epoch_id+1, self.step, mean_loss,preference_loss
                 ))
             self.accelerator.log({'loss':mean_loss},step=self.global_step)
-
+            self.accelerator.log({'preference_loss':preference_loss},step=self.global_step)
     def end_epoch(self, task_id, epoch_id):
         '''
             End of each epoch

@@ -2,6 +2,7 @@ import numpy as np
 import logging
 import torch
 import torch.nn as nn
+import os
 
 from utils.metric import ResultSummary
 from utils.backbone import get_backbone, obtain_features
@@ -88,6 +89,13 @@ class PEFT(BaseLearner):
 
     def end_task(self, task_id):
         super().end_task(task_id)
+        
+        # 保存 LoRA 模型
+        if self.params.PEFT_type == 'LoRA':
+            if self.accelerator.is_main_process:
+                save_path = os.path.join(self.params.dump_path, f'lora_task_{task_id}')
+                self.model.save_pretrained(save_path)
+                logger.info(f"Saved LoRA model for task {task_id} to {save_path}")
     # ==============================================================================================
 
     # ================================= Epoch-Level Functions =======================================

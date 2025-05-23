@@ -177,10 +177,11 @@ def obtain_features(params, model, lm_input, tokenizer):
         extracted_feature = torch.concatenate([all_hidden_states[i][-1][:,-1,:].contiguous() for i in range(num_new_token)],dim=-1)  
 
     elif params.backbone_type == 'discriminative':
-        all_hidden_states = model.forward(**{
+        output = model.forward(**{
                             'input_ids':lm_input['input_ids'],
                             'attention_mask':lm_input['attention_mask']},
-                            output_hidden_states=True).hidden_states
+                            output_hidden_states=True)
+        all_hidden_states = output.hidden_states
         if params.classification_type == 'sentence-level':
             if params.backbone_extract_token == 'last_token':
                 # last token feature

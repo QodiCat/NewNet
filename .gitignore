@@ -16,3 +16,4 @@ default*.yaml
 *.script
 *.deepspeed_env
 !preprocess_dataset.sh
+./dataset/

@@ -255,7 +255,7 @@ class PEFT(BaseLearner):
         if self.params.info_per_steps and self.step%self.params.info_per_steps==0:
             mean_loss = np.mean(self.loss_list)
             if self.accelerator.is_main_process:
-                logger.info("Epoch %d, Step %d: Total_loss=%.3f,Preference_loss=%.3f"%(
+                logger.info("Epoch %d, Step %d: Total_loss=%.3f,Preference_loss=%.9f"%(
                         epoch_id+1, self.step, mean_loss,preference_loss
                 ))
             self.accelerator.log({'loss':mean_loss},step=self.global_step)
